@@ -37,9 +37,9 @@ from text.symbols import symbols
 torch.backends.cudnn.benchmark = True
 global_step = 0
 
-
+#主函数
 def main():
-  """Assume Single Node Multi GPUs Training Only"""
+  """Assume Single Node Multi GPUs Training Only""" # 这里是多卡的部分
   assert torch.cuda.is_available(), "CPU training is not allowed."
 
   n_gpus = torch.cuda.device_count()
@@ -63,28 +63,36 @@ def run(rank, n_gpus, hps):
   torch.manual_seed(hps.train.seed)
   torch.cuda.set_device(rank)
 
-  train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps.data)
-  train_sampler = DistributedBucketSampler(
+
+  train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps.data) #构造一个dataset，从名叫TextAudioSpeakerLoader的class（在data_utils中）实例化而来，这个class是读取文本、音频和speaker相关的，并且返回一个dataset。
+  train_sampler = DistributedBucketSampler( #分布式的sampler，在data_utils中实现，TTS的任务数据长度变化可能很大(有些音频1秒，有些10秒)，通过一个桶排序对数据进行排序，这样每一个batch分到的样本长度变化范围没那么大，有效的数目尽可能地接近，提升训练效率。
       train_dataset,
       hps.train.batch_size,
-      [32,300,400,500,600,700,800,900,1000],
+      [32,300,400,500,600,700,800,900,1000], # 这个长度指的是频谱的单位数
       num_replicas=n_gpus,
       rank=rank,
       shuffle=True)
-  collate_fn = TextAudioSpeakerCollate()
+      # bucket sampler 根据桶排序组batch，得到每个batch的样本的索引。
+
+  collate_fn = TextAudioSpeakerCollate() # 主要是init和call两个方法
+  # collate函数是对一个mini batch进行操作，会在dataload的时候去调用
+
   train_loader = DataLoader(train_dataset, num_workers=8, shuffle=False, pin_memory=True,
-      collate_fn=collate_fn, batch_sampler=train_sampler)
-  if rank == 0:
+      collate_fn=collate_fn, batch_sampler=train_sampler) #把train_dataset、collate_fn和train_sampler传进去
+      # 组mini batch的时候是sampler来组的，同时每组完一个mini batch之后都会经过collate_fn进行后处理（pad，把一个mini batch里的文本、频谱和音频各自pad成相应的长度），这样得到train_loader
+  if rank == 0: # 如果是在主机eval的话，要去做验证，做验证集的时候，在一个GPA上跑，包括记日志、log等，在主GPU上做
     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data)
     eval_loader = DataLoader(eval_dataset, num_workers=8, shuffle=False,
         batch_size=hps.train.batch_size, pin_memory=True,
         drop_last=False, collate_fn=collate_fn)
+  # rank不等于0的时候，只需要管训练
 
+  #定义生成器，
   net_g = SynthesizerTrn(
       len(symbols),
       hps.data.filter_length // 2 + 1,
       hps.train.segment_size // hps.data.hop_length,
-      n_speakers=hps.data.n_speakers,
+      n_speakers=hps.data.n_speakers, # 与单speaker的区别（2/2）
       **hps.model).cuda(rank)
   net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
   optim_g = torch.optim.AdamW(
@@ -139,7 +147,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     x, x_lengths = x.cuda(rank, non_blocking=True), x_lengths.cuda(rank, non_blocking=True)
     spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
     y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(rank, non_blocking=True)
-    speakers = speakers.cuda(rank, non_blocking=True)
+    speakers = speakers.cuda(rank, non_blocking=True) # 与单speaker的区别（2/2）
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, l_length, attn, ids_slice, x_mask, z_mask,\
