@@ -372,7 +372,7 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
           ids_bucket = indices[i] # 把bucket里面所存储的样本的索引找出来，放到ids_bucket，这就是所有的样本的索引。
           num_samples_bucket = self.num_samples_per_bucket[i] #num_samples_bucket把桶里面有多少个样本也找出来。
           # num_samples_bucket不等于len_bucket，因为num_samples_bucket已经做过余数补偿了，大于等于len_bucket
-          #如果如果桶的元素数刚好是total_batch_size的整数倍的话，那么num_samples_bucket等于len_bucket，否则num_samples_bucket大于len_bucket
+          # 如果如果桶的元素数刚好是total_batch_size的整数倍的话，那么num_samples_bucket等于len_bucket，否则num_samples_bucket大于len_bucket
   
           # add extra samples to make it evenly divisible
           rem = num_samples_bucket - len_bucket #计算差多少个余数
@@ -382,7 +382,7 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
   
           # subsample
           ids_bucket = ids_bucket[self.rank::self.num_replicas]
-          #现在是支持多GPU训练的，于是每个GPU隔num_replicas个取一次桶里面属于这个GPU的样本索引。rank代表第几个GPU，num_replicas代表GPU的总数。如果只有一个GPU，那就是一个一个取。
+          # 现在是支持多GPU训练的，于是每个GPU隔num_replicas个取一次桶里面属于这个GPU的样本索引。rank代表第几个GPU，num_replicas代表GPU的总数。如果只有一个GPU，那就是一个一个取。
   
           # batching 组batch
           for j in range(len(ids_bucket) // self.batch_size): #j代表第几个batch，根据bucket里的样本数目除以batch_size，得到mini batch的个数，每个mini batch都会得到一个batch。

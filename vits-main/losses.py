@@ -43,6 +43,7 @@ def generator_loss(disc_outputs):
   return loss, gen_losses
 
 
+# VITS中kl散度计算公式代码
 def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
   """
   z_p, logs_q: [b, h, t_t]

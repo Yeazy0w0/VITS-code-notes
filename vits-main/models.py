@@ -14,6 +14,21 @@ from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from commons import init_weights, get_padding
 
 
+# 这个随机时长预测器是根据上一步单调对齐搜索，也就是动态规划的搜索中得到的对齐矩阵，根据矩阵对频谱那个维度进行求和得到每个文本持续的时长。基于这个时长，可以知道StochasticDurationPredictor的训练。
+# 之所以用随机时长预测器就是因为这种做法可以得到表现力更强的模型，比如一个人不同的时候说话表现出不同语速和节奏。
+# 随机时长其实是预测每个因素的时长分布，从这个分布中采样，就能得到这个因素的时长，这样来体现随机性。具体的采样是基于冲参数化采样的。
+# sdp（随机时长预测器）是基于Flow设计的，基于最大似然估计做了优化。
+# 这里的x是文本编码状态，w是时长，g是条件。
+# x = torch.detach(x)进行分离，因为这个时长模型梯度更新的时候，不能去影响文本编码器，因此在这里对x做一个截断。
+# 然后x经过一个pre层，这个pre层是一个一维卷积，得到卷积后的x。
+# 如果是多说话人的模型，要把speaker_Embedding加进来。
+# x = self.convs(x, x_mask)和x = self.proj(x) * x_mask对x进行预处理，得到新的x，就是论文中的c。
+# 训练的时候走not reverse这个逻辑，首先得到flows，就是先验的flow。
+# h_w = self.post_pre(w)、h_w = self.post_convs(h_w, x_mask)和h_w = self.post_proj(h_w) * x_mask是对时长进行预处理，得到h_w，h_w和x作为后验分布的条件。
+# 下一行代码会生成一个随机噪声，这个噪声和w的形状相关。因为这里用的是变分增广的flow，引入了另外一个随机量，所以特征维度是2不是1。
+# z_q分别经过很多个flow进行遍历，每次遍历都会把上一个flow的输出作为下一个flow的输入，同时引入条件g。
+# 每次经过flow之后，它的对数似然的变化量logdet_q也能返回。同时flow变换后的z变量也能返回。
+# 然后对z_q进行分割，分割成z_u和z1，再得到u。现在就可以算出后验分布的对数似然了。
 class StochasticDurationPredictor(nn.Module):
   def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, n_flows=4, gin_channels=0):
     super().__init__()
@@ -72,9 +87,14 @@ class StochasticDurationPredictor(nn.Module):
       z_u, z1 = torch.split(z_q, [1, 1], 1) 
       u = torch.sigmoid(z_u) * x_mask
       z0 = (w - u) * x_mask
+      # 下面两行就是后验分布的对数似然。
       logdet_tot_q += torch.sum((F.logsigmoid(z_u) + F.logsigmoid(-z_u)) * x_mask, [1,2])
       logq = torch.sum(-0.5 * (math.log(2*math.pi) + (e_q**2)) * x_mask, [1,2]) - logdet_tot_q
+      # 以上是后验分布（训练部分），下面是先验分布的部分。
 
+      # z0就是预测的时长，z0经过log_flow，再把z0和辅助的变量z1拼起来，得到新的z。
+      # nll是先验分布的对数似然。
+      # 先验分布的对数似然nll和后验分布的对数似然logq加起来，表示的是我们要优化的负对数似然的上界。
       logdet_tot = 0
       z0, logdet = self.log_flow(z0, x_mask)
       logdet_tot += logdet
@@ -84,6 +104,11 @@ class StochasticDurationPredictor(nn.Module):
         logdet_tot = logdet_tot + logdet
       nll = torch.sum(0.5 * (math.log(2*math.pi) + (z**2)) * x_mask, [1,2]) - logdet_tot
       return nll + logq # [b]
+    # 推理阶段，先对先验分布的flow翻转一下，再将中间无用的flow过滤掉，然后会生成一个随机噪声z。
+    # 对反转过的flow进行一次次的经过变换，z就从一个简单的分布变成了复杂的分布。
+    # 对z进行split得到z0和z1，z0是log时长。
+    # 返回logw(log时长)，主函数中会对logw做一个计算得到最终的w，再经过一个int操作就可以取整，得到整数的时长。
+    #得到整数的时长之后，就可以对引变量进行拓展，再送入解码器中，就可以得到预测的完整的波形。
     else:
       flows = list(reversed(self.flows))
       flows = flows[:-2] + [flows[-1]] # remove a useless vflow
@@ -131,7 +156,7 @@ class DurationPredictor(nn.Module):
     x = self.proj(x * x_mask)
     return x * x_mask
 
-
+# x表示单词的索引，单词先转化成Embedding，再缩放一下，送入基于transformer的encoder里面，再对它进行映射，得到两个统计量，一个均值和标准差的对数，是先验编码器预测的两个分布的参数。
 class TextEncoder(nn.Module):
   def __init__(self,
       n_vocab,
@@ -176,6 +201,7 @@ class TextEncoder(nn.Module):
     return x, m, logs, x_mask
 
 
+# 这个flow主要由两个模块构成的，第一个叫ResidualCouplingLayer，是一个耦合Flow，第二个叫Flip。
 class ResidualCouplingBlock(nn.Module):
   def __init__(self,
       channels,
@@ -208,7 +234,7 @@ class ResidualCouplingBlock(nn.Module):
         x = flow(x, x_mask, g=g, reverse=reverse)
     return x
 
-
+# 这个后验编码器主要是由一维的卷积所构成的，x就是线性谱，g是global condition，后验编码器会接受说话人的身份作为条件。
 class PosteriorEncoder(nn.Module):
   def __init__(self,
       in_channels,
@@ -387,11 +413,13 @@ class MultiPeriodDiscriminator(torch.nn.Module):
 
 
 
+# 这个就是generator，整个VITS从文本到波形都是在这个类里面实现的。
 class SynthesizerTrn(nn.Module):
   """
   Synthesizer for Training
   """
 
+  # init函数对一些模型的参数进行指定，比如通道数、隐含层个数、注意力的头数、层数等。
   def __init__(self, 
     n_vocab,
     spec_channels,
@@ -436,6 +464,7 @@ class SynthesizerTrn(nn.Module):
 
     self.use_sdp = use_sdp
 
+    # 文本被送入TextEncoder（文本编码器），以文本作为输入，将孤立的文本经过文本编码器表征成上下文相关的状态向量。得到文本的先验分布。
     self.enc_p = TextEncoder(n_vocab,
         inter_channels,
         hidden_channels,
@@ -444,18 +473,30 @@ class SynthesizerTrn(nn.Module):
         n_layers,
         kernel_size,
         p_dropout)
+    # 波形生成器，将后验分布得到的z送入解码器中，得到波形。
     self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)
+    # 后验编码器。
     self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)
+    # flow，先验分布后加flow可以提高先验分布的表达能力。
     self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
 
+    # 这里定义了一个随机时长预测器（说话的韵律节奏）。
     if use_sdp:
       self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels)
     else:
       self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
 
+    # 说话人的身份
     if n_speakers > 1:
       self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
+  # forward函数如何做前向运算的，如何基于VAE、Flow和GAN从文本生成波形
+  # x是文本，x_lengths是长度，将这两个送入到先验编码器中得到编码后的x以及先验编码器出来的分布的均值和对数标准差，还有文本的mask。
+  # m_p,是先验的均值，logs_p先验分布的对数标准差，对应论文中的fθ(z)的均值和标准差
+  # enc_q是后验分布，g是说话人的身份，y是频谱，y_lengths是频谱的长度，都是从真实的音频中通过傅里叶变换得到的。将这些送入后验编码器得到z，m_q, logs_q以及y_mask。
+  # m_q和logs_q是后验分布（高斯分布）的均值和对数标准差,z是以m_q和logs_q的高斯分布中采样得到的引变量。z的维度和y的时间长度是一致的，也就是说y有多少个，z就有多少个。
+  # 后验分布和条件有关，先验分布和条件无关，只和文本有关。
+  # z_p用在train_ms.py的loss_kl中。
   def forward(self, x, x_lengths, y, y_lengths, sid=None):
 
     x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
@@ -467,6 +508,11 @@ class SynthesizerTrn(nn.Module):
     z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
     z_p = self.flow(z, y_mask, g=g)
 
+    # 这里做了一个动态规划，把z_p和先验分布对齐。因为z_p是频谱长度可能有几百帧，但是文本的m_p和logs_p可能只有一句话或者几个单词，因此需要将文本和频谱对齐。
+    # 这部分对应论文中的单调对齐搜索。具体的算法在monotonic_align的core.pyx中。
+    # 因为m_p和logs_p的维度是不一样的，所以这里用矩阵乘法计算。
+    # 得到attn矩阵是一个零一矩阵，维度是[b,1,T_t,T_s]，w = attn.sum(2)将矩阵求和，这里的维度是[batch_size,1,T_t],其中T_t是text的长度。
+    # 得到w之后，训练的时候是有后验分布的，但是推理的时候是没有后验分布的，因此需要对先验分布进行拓展，拓展的一局需要一个额外的时长模型，就是随机的时长预测器sdp。
     with torch.no_grad():
       # negative cross-entropy
       s_p_sq_r = torch.exp(-2 * logs_p) # [b, d, t]
@@ -480,6 +526,10 @@ class SynthesizerTrn(nn.Module):
       attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
     w = attn.sum(2)
+    # 这里意思是，如果我们使用随机时长预测器或确定时长，要走不同的逻辑。
+    # 确定时长是将编码后的x送入卷积网络之中，让它去预测每个每个x对应的时长是多少，然后把时长和w计算l1_loss。
+    # 这里的l_length就是loss_length的意思。
+    # 确定时长模型，就是把预测的logw和真实的logw_做一个差得到loss_length。
     if self.use_sdp:
       l_length = self.dp(x, x_mask, w, g=g)
       l_length = l_length / torch.sum(x_mask)
@@ -488,6 +538,11 @@ class SynthesizerTrn(nn.Module):
       logw = self.dp(x, x_mask, g=g)
       l_length = torch.sum((logw - logw_)**2, [1,2]) / torch.sum(x_mask) # for averaging 
 
+    # 指导attn矩阵之后，可以对m_p和logs_p进行拓展。
+    # m_p的形状是[b,feat_dim,T_t],logs_p的形状是[b,feat_dim,T_t],这是对齐之前的形状。
+    # 拓展以后m_p和logs_p的形状是[b,feat_dim,T_s]。这时候均值和方差从T_t这个时间长度扩展到了T_s的时间长度，即频谱的长度。
+    # 这时候长度一致了才能计算kl_loss，所以m_p最终会返回出来送入kl_loss。
+    # z_slice, ids_slice和o = self.dec(z_slice, g=g)是从后验引变量得到波形，是解码器，由反卷积和一些残差模块构成的。
     # expand prior
     m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
     logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
@@ -522,6 +577,7 @@ class SynthesizerTrn(nn.Module):
     o = self.dec((z * y_mask)[:,:,:max_len], g=g)
     return o, attn, y_mask, (z, z_p, m_p, logs_p)
 
+  # 额外的小功能，“变声器"。
   def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
     assert self.n_speakers > 0, "n_speakers have to be larger than 0."
     g_src = self.emb_g(sid_src).unsqueeze(-1)

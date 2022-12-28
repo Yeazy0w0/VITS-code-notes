@@ -87,14 +87,18 @@ def run(rank, n_gpus, hps):
         drop_last=False, collate_fn=collate_fn)
   # rank不等于0的时候，只需要管训练
 
-  #定义生成器，
+  # 定义生成器，SynthesizerTrn表示文本到音频的一整个模型
   net_g = SynthesizerTrn(
       len(symbols),
       hps.data.filter_length // 2 + 1,
       hps.train.segment_size // hps.data.hop_length,
       n_speakers=hps.data.n_speakers, # 与单speaker的区别（2/2）
-      **hps.model).cuda(rank)
+      **hps.model).cuda(rank) #net_g被传到了cuda上
+
+  # 定义了一个多周期的判别器，是一个混合的判别器，同样会被传到cuda上。    
   net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
+
+  # 因为这是一个GAN的训练任务，所以定义了两套优化器
   optim_g = torch.optim.AdamW(
       net_g.parameters(), 
       hps.train.learning_rate, 
@@ -105,9 +109,12 @@ def run(rank, n_gpus, hps):
       hps.train.learning_rate, 
       betas=hps.train.betas, 
       eps=hps.train.eps)
+  # 由于这里是一个分布式的训练，所以用一个DDP把优化器包裹起来，包裹之后“net_g.model"才是模型。
   net_g = DDP(net_g, device_ids=[rank])
   net_d = DDP(net_d, device_ids=[rank])
 
+  # 如果在训练的时候，已经有现成的模型的话，那这里就会load一下，继续训练。这里写得非常自动化，不需要去指定load第几个pytorch文件，它会自动寻找最近的是哪一个模型文件进行读取。
+  # 这种方法有优点也有缺点，优点是什么都不需要干，坏处是它默认了只读最后一个。
   try:
     _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g)
     _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"), net_d, optim_d)
@@ -115,12 +122,18 @@ def run(rank, n_gpus, hps):
   except:
     epoch_str = 1
     global_step = 0
+  # 这里定义的global_step是训练步数，是等于epoch乘以每个epoch里面batch_size的个数。
 
+  # 这里定义了两个学习率的指数衰减的方案，分别是生成器的衰减方案和判别器的衰减方案，衰减方案是一样的。
   scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
   scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
 
+  # 因为用到了混合精度训练（AMP，自动的混合训练），训练的时候会用fp16去训练，这样可以在效率和性能上取得一个平衡。
+  # 这里实例化了一个GradScaler的API，这个API是torch.cuda.amp里面的，用fp16训练的API，得到一个scaler
   scaler = GradScaler(enabled=hps.train.fp16_run)
 
+  # 对epoch进行循环，每个epoch在里面做train_and_evaluate，如果是在主GPU上，logger, writer还有验证集传上去，如果不是主GPU，则只要负责训练就好了。
+  # 完成以后，还要对刚刚定义的学习率的方案进行step，更新一下学习率。
   for epoch in range(epoch_str, hps.train.epochs + 1):
     if rank==0:
       train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, eval_loader], logger, [writer, writer_eval])
@@ -130,6 +143,7 @@ def run(rank, n_gpus, hps):
     scheduler_d.step()
 
 
+# 每个周期里面都会运行train_and_evaluate函数，这个函数里面还有一层for循环，为了对data_loader进行遍历
 def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
   net_g, net_d = nets
   optim_g, optim_d = optims
@@ -138,21 +152,30 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
   if writers is not None:
     writer, writer_eval = writers
 
+  # 这里会把train_loader.batch_sampler设置epoch，控制桶排序的随机性。
   train_loader.batch_sampler.set_epoch(epoch)
   global global_step
 
+  # net_g和net_d变成train的模式，这种模式会记录梯度，在抓包等的时候祈祷相应的作用。
   net_g.train()
   net_d.train()
+  # 对train_loader进行枚举，每一个train_loader都会返回7个东西，分别是：文本、文本长度、频谱、频谱长度、音频、音频长度以及speaker的id。
+  # 然后分别将这7个量分别拷贝到，cuda（GPU）上面。
   for batch_idx, (x, x_lengths, spec, spec_lengths, y, y_lengths, speakers) in enumerate(train_loader):
     x, x_lengths = x.cuda(rank, non_blocking=True), x_lengths.cuda(rank, non_blocking=True)
     spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
     y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(rank, non_blocking=True)
     speakers = speakers.cuda(rank, non_blocking=True) # 与单speaker的区别（2/2）
 
+    # autocast中的enabled等于true，意思是会用fp16的精度去做训练，去做它的前向运算和算梯度。
     with autocast(enabled=hps.train.fp16_run):
       y_hat, l_length, attn, ids_slice, x_mask, z_mask,\
       (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(x, x_lengths, spec, spec_lengths, speakers)
+      # 将x等7个量送到生成器里面，生成器运行一遍，得到预测的波形和长度。
+      # 这个训练是采样式的训练，不是将所有的频谱送入解码器中得到波形，而是从里面采样一小段频谱来生成波形，这样训练所耗的内存会变小一些。
+      # ids_slice就是采样后频谱的id
 
+      # 把频谱（线性谱）转成梅尔谱，因为后面的一个重构loss需要梅尔谱，这里将线性谱转化成梅尔谱，作为重构loss的标签。
       mel = spec_to_mel_torch(
           spec, 
           hps.data.filter_length, 
@@ -160,7 +183,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
           hps.data.sampling_rate,
           hps.data.mel_fmin, 
           hps.data.mel_fmax)
+
+      # 这里slice_segments会取一部分梅尔谱，y_mel是真实的梅尔谱。
       y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
+      # y_hat_mel是预测的梅尔谱。预测的梅尔谱只能从预测的音频波形中得到，从波形得到梅尔谱就需要调用mel_spectrogram_torch函数去计算梅尔频谱，得到y_hat_mel
       y_hat_mel = mel_spectrogram_torch(
           y_hat.squeeze(1), 
           hps.data.filter_length, 
@@ -172,37 +198,45 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
           hps.data.mel_fmax
       )
 
+      # 接下来要拿到真实的波形，因为判别器做判别的时候，需要以波形作为输入。刚刚生成的y_hat，不是原来的一整段音频，是从采样后的频谱里生成的，只是一小段音频。要得到y_hat的标签，也要从真实的y里面去取一小段音频。
+      # 这里梅尔谱的ids_slice * hps.data.hop_length就是说：一个梅尔谱可能对应的256个波形点，所以hop_length就是256。这样就可以取到采样后的梅尔谱所对应的真实的音频y
       y = commons.slice_segments(y, ids_slice * hps.data.hop_length, hps.train.segment_size) # slice 
 
+      # 这里将y（真实的波形）和预测的波形都送入到判别器中，就会得到真实的判别器的输出和生成的判别器的输出。
+      # 然后会在autocast(enabled=False)里面计算它的loss，这部分是不走fp16的。
       # Discriminator
       y_d_hat_r, y_d_hat_g, _, _ = net_d(y, y_hat.detach())
       with autocast(enabled=False):
-        loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
+        loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g) #将判别器的真实的输出和预测的输出送入discriminator_loss中，分别得到判别器的总的损失loss_disc
         loss_disc_all = loss_disc
-    optim_d.zero_grad()
-    scaler.scale(loss_disc_all).backward()
-    scaler.unscale_(optim_d)
-    grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
-    scaler.step(optim_d)
+    # 更新判别器
+    optim_d.zero_grad() # 对判别器的梯度置零
+    scaler.scale(loss_disc_all).backward() # 把判别器的损失loss_disc_all送入scaler.scale()中进行backward()，这样可以计算判别器的每个参数的梯度
+    scaler.unscale_(optim_d) # 对判别器的模型用scaler.unscale_还原一下，再截取梯度
+    grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None) # clip_grad_value对梯度的值进行截断
+    scaler.step(optim_d) # 对判别器的参数进行更新
+  # 以上是混合精度训练的代码，判别器的更新
 
-    with autocast(enabled=hps.train.fp16_run):
+  # 生成器部分
+    with autocast(enabled=hps.train.fp16_run): # 依旧在用fp16的精度去做训练
       # Generator
-      y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
+      y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat) # 算出一个对抗的loss（从判别器过来的），将真实的波形和预测的波形送入到discriminator中，得到中间特征的输出。
       with autocast(enabled=False):
-        loss_dur = torch.sum(l_length.float())
-        loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
-        loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-
-        loss_fm = feature_loss(fmap_r, fmap_g)
-        loss_gen, losses_gen = generator_loss(y_d_hat_g)
-        loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl
+        loss_dur = torch.sum(l_length.float()) # 时长loss
+        loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel # 梅尔谱重构loss，对真实的梅尔谱和预测的梅尔谱做一个l1_loss。其中系数c_mel等于45（见论文）。
+        loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl # 由文本的先验编码器所预测的复杂分布和频谱经过的后验编码器所得到的高斯分布两个之间计算kl散度，系数c_kl等于1（论文）。
+        loss_fm = feature_loss(fmap_r, fmap_g) # 将真实波形和预测波形同时送入到判别器之中，去看判别器的中层值特征是否相近。
+        loss_gen, losses_gen = generator_loss(y_d_hat_g) # 对抗loss
+        loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl # 得到生成器的总loss
     optim_g.zero_grad()
     scaler.scale(loss_gen_all).backward()
     scaler.unscale_(optim_g)
     grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
     scaler.step(optim_g)
     scaler.update()
+    #以上6行是对生成器进行更新
 
+    # 在主GPU上对loss的值进行打印，保存相应的模型，并且写入到日志文件之中，对global_step进行更新。如果global_step等于eval_interval的整数倍，就会做一个evaluate验证
     if rank==0:
       if global_step % hps.train.log_interval == 0:
         lr = optim_g.param_groups[0]['lr']

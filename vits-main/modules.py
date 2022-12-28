@@ -294,7 +294,10 @@ class ElementwiseAffine(nn.Module):
       x = (x - self.m) * torch.exp(-self.logs) * x_mask
       return x
 
-
+# forward中对x进行分割，分割成两部分，得到x0（上面的）和x1（下面的）。x0会经过一个pre层，再经过encoder层得到新的h，再让h经过post层，得到stats（一个统计量）。
+# 如果设置的mean_only是false的话，就会输出均值和标准差，如果是true，就直接预测平移量，不会预测缩放量。
+# x0没变过，基于x0对x1进行变换，得到新的x1。
+# 如果不是reverse就会返回logdet。如果mean_only等于true的话，这里logdet就等于0。
 class ResidualCouplingLayer(nn.Module):
   def __init__(self,
       channels,
