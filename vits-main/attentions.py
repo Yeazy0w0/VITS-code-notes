@@ -9,7 +9,7 @@ import commons
 import modules
 from modules import LayerNorm
    
-
+# Encoder 类继承自 PyTorch 的 nn.Module 类，表示它是一个神经网络模块。它实现了一个编码器，可以将输入序列编码成隐藏状态。在初始化时，该类接受了若干参数，例如隐藏通道数、过滤通道数、头数和层数。在 forward 方法中，它会对输入序列执行多层注意力和前馈网络，并返回编码后的隐藏状态。
 class Encoder(nn.Module):
   def __init__(self, hidden_channels, filter_channels, n_heads, n_layers, kernel_size=1, p_dropout=0., window_size=4, **kwargs):
     super().__init__()
@@ -46,7 +46,7 @@ class Encoder(nn.Module):
     x = x * x_mask
     return x
 
-
+# Decoder 类也继承自 nn.Module 类，表示它是一个神经网络模块。它实现了一个解码器，可以根据编码后的隐藏状态和输入序列，生成输出序列。在初始化时，该类接受了若干参数，例如隐藏通道数、过滤通道数、头数和层数。在 forward 方法中，它会对输入序列和编码后的隐藏状态执行多层注意力和前馈网络，并返回生成的输出序列。
 class Decoder(nn.Module):
   def __init__(self, hidden_channels, filter_channels, n_heads, n_layers, kernel_size=1, p_dropout=0., proximal_bias=False, proximal_init=True, **kwargs):
     super().__init__()
@@ -96,8 +96,20 @@ class Decoder(nn.Module):
       x = self.norm_layers_2[i](x + y)
     x = x * x_mask
     return x
+# 这两个模块类可以被用来构建一个序列到序列模型，其中输入序列通过编码器编码成隐藏状态，再通过解码器生成输出序列。
+# 在 Encoder 类中，有一个成员变量 attn_layers，是一个 PyTorch 的 nn.ModuleList 类型，用于存储多层注意力层。
+# 每一层注意力层都是由一个 MultiHeadAttention 类来实现的。norm_layers_1 是一个 nn.ModuleList 类型，用于存储多层归一化层，每一层归一化层都是由一个 LayerNorm 类来实现的。
+# ffn_layers 是一个 nn.ModuleList 类型，用于存储多层前馈网络层，每一层前馈网络层都是由一个 FFN 类来实现的。norm_layers_2 是一个 nn.ModuleList 类型，用于存储多层归一化层，每一层归一化层都是由一个 LayerNorm 类来实现的。
+# 在 forward 方法中，首先计算注意力矩阵的遮挡矩阵 attn_mask，然后对输入序列执行多层注意力和前馈网络。每一层注意力层都会调用 MultiHeadAttention 类的 forward 方法，每一层前馈网络层都会调用 FFN 类的 forward 方法。
+# 在每一层注意力和前馈网络之后，都会调用一层归一化层来归一化输入和输出。最后，返回编码后的隐藏状态。
+# Decoder 类的实现方式与 Encoder 类似，也有多层注意力层、归一化层和前馈网络层。不同的是，Decoder 类还包含了自注意力层和编码器解码器注意力层。自注意力层用于对解码器自身的隐藏状态进行注意力。编码器解码器注意力层用于在解码过程中，将编码后的隐藏状态与解码器自身的隐藏状态融合在一起。
+# 在 forward 方法中，首先计算注意力矩阵的遮挡矩阵 attn_mask，然后对解码器的输入和隐藏状态执行多层注意力和前馈网络。每一层注意力层都会调用对应的 MultiHeadAttention 类的 forward 方法，每一层前馈网络层都会调用对应的 FFN 类的 forward 方法。在每一层注意力和前馈网络之后，都会调用一层归一化层来归一化输入和输出。最后，返回生成的输出序列。
 
-
+# 多头注意力机制 (multi-head attention) 是 Transformer 模型中用于自注意力机制 (self-attention) 的一种改进方法，它将注意力机制分成多个独立的头 (heads)，每个头都在输入上进行注意力机制，然后将各个头的输出拼接在一起作为整个多头注意力机制的输出。这样做的优点是可以提高自注意力机制的表示能力，并且可以使得每个头注意到的信息不同，从而使得模型更加灵活。
+# 该模型有三个输入：输入张量 x、上下文张量 c 和注意力掩码 attn_mask，并输出一个张量 x。
+# 在初始化函数中，定义了模型的超参数，包括输入和输出张量的通道数，注意力头数量，以及注意力机制的一些辅助参数，如 dropout 率、窗口大小、是否共享注意力头等。然后创建了四个 1D 卷积层，分别用于处理输入张量、上下文张量的查询、键和值。如果定义了窗口大小，则还定义了两个参数张量，用于在注意力机制中使用相对位置信息。
+# 在前向传播函数中，使用四个 1D 卷积层分别处理输入张量和上下文张量的查询、键和值，然后调用 attention 函数进行注意力机制的计算，最后使用最后一个 1D 卷积层将注意力机制的输出转换为最终输出 x。
+# attention 函数中，使用矩阵乘法将查询张量和键张量相乘得到注意力权重，然后根据是否使用了相对位置信息，使用不同的方法计算最终的注意力权重。
 class MultiHeadAttention(nn.Module):
   def __init__(self, channels, out_channels, n_heads, p_dropout=0., window_size=None, heads_share=True, block_length=None, proximal_bias=False, proximal_init=False):
     super().__init__()
@@ -253,7 +265,18 @@ class MultiHeadAttention(nn.Module):
     diff = torch.unsqueeze(r, 0) - torch.unsqueeze(r, 1)
     return torch.unsqueeze(torch.unsqueeze(-torch.log1p(torch.abs(diff)), 0), 0)
 
-
+# 这段代码实现了一个叫做 FFN（Feed Forward Network）的模型。
+# FFN 模型主要用于在序列中提取线性关系。它通常用于多头注意力模型（例如 Transformer 模型）中，用于将多头注意力模型提取的信息融合到输出中。
+# FFN 模型包含两个卷积层。输入数据通过这两个卷积层处理，然后得到最终输出。两个卷积层之间还包含一个激活函数（默认使用 ReLU），以及一个 Dropout 层（默认保留率为 0）。
+# 这段代码的参数列表如下：
+# in_channels：输入数据的通道数。
+# out_channels：输出数据的通道数。
+# filter_channels：卷积层的通道数。
+# kernel_size：卷积核的大小。
+# p_dropout：Dropout 层的保留率。
+# activation：激活函数的名称。
+# causal：是否使用防止滞后的填充。
+# 在调用模型时，你可以传入一个输入数据和一个输入数据的掩码（mask）。在输入数据通过两个卷积层时，掩码会被乘到输入数据上，以便控制哪些位置的数据需要被忽略。
 class FFN(nn.Module):
   def __init__(self, in_channels, out_channels, filter_channels, kernel_size, p_dropout=0., activation=None, causal=False):
     super().__init__()

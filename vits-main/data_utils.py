@@ -10,7 +10,7 @@ from mel_processing import spectrogram_torch
 from utils import load_wav_to_torch, load_filepaths_and_text
 from text import text_to_sequence, cleaned_text_to_sequence
 
-# 这是单speaker版本
+# 这是单speaker版本，具体分析往下参考多speaker版本
 class TextAudioLoader(torch.utils.data.Dataset):
     """
         1) loads audio, text pairs

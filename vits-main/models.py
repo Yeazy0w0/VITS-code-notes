@@ -266,7 +266,17 @@ class PosteriorEncoder(nn.Module):
     z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
     return z, m, logs, x_mask
 
-
+# 这是一个生成器模型，用于生成波形数据。它包含了若干个反卷积层和残差块。
+# 初始化时，需要传入的参数有：
+# initial_channel：生成器的输入数据的通道数。
+# resblock：残差块的类型，可以为'1'或'2'。
+# resblock_kernel_sizes：残差块使用的卷积核大小的列表。
+# resblock_dilation_sizes：残差块使用的膨胀率的列表。
+# upsample_rates：反卷积层使用的上采样率的列表。
+# upsample_initial_channel：反卷积层的输入通道数。
+# upsample_kernel_sizes：反卷积层使用的卷积核大小的列表。
+# gin_channels：输入的附加信息的通道数，默认为0，即不使用附加信息。
+# 在进行前向传播时，生成器的输入为输入的波形数据 x 和可选的附加信息 g。生成器会对 x 和 g 进行处理，然后通过反卷积和残差块得到输出的波形数据。最后会将输出的波形数据通过 tanh 函数转换为 $[-1, 1]$ 区间内的值。
 class Generator(torch.nn.Module):
     def __init__(self, initial_channel, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=0):
         super(Generator, self).__init__()
@@ -321,7 +331,21 @@ class Generator(torch.nn.Module):
         for l in self.resblocks:
             l.remove_weight_norm()
 
-
+# 这是一个 PyTorch 神经网络模型的类定义。这个模型被命名为 DiscriminatorP，它继承了 PyTorch 的 torch.nn.Module 类，表示它是一个 PyTorch 模型。
+# 在这个类的构造函数中，定义了几个参数：
+# period: 一个整数，表示周期。
+# kernel_size: 卷积核的大小，默认值为 5。
+# stride: 卷积的步幅，默认值为 3。
+# use_spectral_norm: 是否使用光谱归一化，默认值为 False。
+# 在构造函数中，调用了 super() 函数来初始化父类的构造函数。然后定义了几个成员变量：
+# self.period: 保存周期的值。
+# self.use_spectral_norm: 保存是否使用光谱归一化的布尔值。
+# self.convs: 一个 PyTorch 的 ModuleList，包含多个卷积层。
+# self.conv_post: 一个卷积层。
+# 在构造函数的最后，定义了一个名为 forward 的方法，它定义了这个模型的前向计算过程。这个方法有一个输入参数 x，是输入的张量。这个方法通过调用 self.convs 中的卷积层并应用激活函数，对输入进行多次卷积，最后返回卷积后的结果。
+# 在方法的开头，使用了一个名为 fmap 的列表来保存卷积层的输出。然后，对于输入的张量 x，将其从 1D 张量转换为 2D 张量。为了进行这种转换，需要获取输入张量的形状（通过调用 x.shape），然后使用 PyTorch 的 view 函数将其转换为 2D 张量。
+# 然后，使用一个循环遍历 self.convs 中的每一个卷积层。对于每一个卷积层，使用 x 作为输入，调用卷积层的前向计算，并将结果保存在 x 中。接着，使用 PyTorch 的 F.leaky_relu 函数对结果进行激活，并将激活后的结果添加到 fmap 列表中。
+# 最后，调用 self.conv_post 卷积层，并将结果保存在 x 中。然后，使用 PyTorch 的 torch.flatten 函数将结果压缩成一维张量，并返回结果和 fmap 列表。
 class DiscriminatorP(torch.nn.Module):
     def __init__(self, period, kernel_size=5, stride=3, use_spectral_norm=False):
         super(DiscriminatorP, self).__init__()
@@ -358,7 +382,14 @@ class DiscriminatorP(torch.nn.Module):
 
         return x, fmap
 
-
+# 这是另一个 PyTorch 神经网络模型的类定义。这个模型被命名为 DiscriminatorS，它同样继承了 PyTorch 的 torch.nn.Module 类，表示它是一个 PyTorch 模型。
+# 在这个类的构造函数中，定义了一个参数：
+# use_spectral_norm: 是否使用光谱归一化，默认值为 False。
+# 在构造函数中，调用了 super() 函数来初始化父类的构造函数。然后定义了一个成员变量：
+# self.convs: 一个 PyTorch 的 ModuleList，包含多个卷积层。
+# self.conv_post: 一个卷积层。
+# 在构造函数的最后，定义了一个名为 forward 的方法，它定义了这个模型的前向计算过程。这个方法的实现方式与 DiscriminatorP 类中的 forward 方法非常相似，都是遍历 self.convs 中的卷积层，并调用卷积层的前向计算，最后返回卷积后的结果。
+# 唯一的区别在于，这个模型中使用的是 1D 卷积层，而不是 2D 卷积层。 1D 卷积层在处理序列数据时非常有用，例如时间序列数据。
 class DiscriminatorS(torch.nn.Module):
     def __init__(self, use_spectral_norm=False):
         super(DiscriminatorS, self).__init__()
@@ -386,7 +417,17 @@ class DiscriminatorS(torch.nn.Module):
 
         return x, fmap
 
-
+# MultiPeriodDiscriminator，它同样继承了 PyTorch 的 torch.nn.Module 类，表示它是一个 PyTorch 模型。
+# 在这个类的构造函数中，定义了一个参数：
+# use_spectral_norm: 是否使用光谱归一化，默认值为 False。
+# 在构造函数中，调用了 super() 函数来初始化父类的构造函数。然后定义了一个名为 periods 的列表，包含整数 2、3、5、7 和 11。
+# 接着，使用这个列表创建了一个 DiscriminatorP 对象的列表。这些对象的周期分别为 2、3、5、7 和 11。然后，将这些对象包装在一个 PyTorch 的 ModuleList 中，并将它保存在 self.discriminators 中。
+# 对于每一个 DiscriminatorP 对象，调用其 forward 方法时，使用 y 和 y_hat 分别作为输入。然后将每一次调用的结果分别保存在以下四个列表中：
+# y_d_rs: 包含对 y 进行每一次前向计算的结果。
+# y_d_gs: 包含对 y_hat 进行每一次前向计算的结果。
+# fmap_rs: 包含每一次对 y 进行前向计算时的中间结果。
+# fmap_gs: 包含每一次对 y_hat 进行前向计算时的中间结果。
+# 最后，方法返回四个列表。这些列表中包含的数据可能用于进一步的计算或可视化。
 class MultiPeriodDiscriminator(torch.nn.Module):
     def __init__(self, use_spectral_norm=False):
         super(MultiPeriodDiscriminator, self).__init__()

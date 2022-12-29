@@ -8,7 +8,11 @@ DEFAULT_MIN_BIN_WIDTH = 1e-3
 DEFAULT_MIN_BIN_HEIGHT = 1e-3
 DEFAULT_MIN_DERIVATIVE = 1e-3
 
-
+# 这是一个定义了一个函数 piecewise_rational_quadratic_transform 的代码段。
+# 这个函数的作用是计算分段有理二次函数的转换。
+# 它的输入有 inputs、unnormalized_widths、unnormalized_heights、unnormalized_derivatives 和 tails。
+# 它的输出有 outputs 和 logabsdet。这个函数还有一些可选参数，如 inverse、tail_bound、min_bin_width、min_bin_height 和 min_derivative。
+# 其中，inverse 是一个布尔值，表示是否计算反函数。tail_bound 是一个浮点数，表示尾部的边界。min_bin_width、min_bin_height 和 min_derivative 是常量，分别表示最小的区间宽度、高度和导数。
 def piecewise_rational_quadratic_transform(inputs, 
                                            unnormalized_widths,
                                            unnormalized_heights,
@@ -43,7 +47,7 @@ def piecewise_rational_quadratic_transform(inputs,
     )
     return outputs, logabsdet
 
-
+# searchsorted 函数是一个用于在有序数组中查找某些数的函数。
 def searchsorted(bin_locations, inputs, eps=1e-6):
     bin_locations[..., -1] += eps
     return torch.sum(
@@ -51,7 +55,10 @@ def searchsorted(bin_locations, inputs, eps=1e-6):
         dim=-1
     ) - 1
 
-
+# 这是一个定义了一个函数 unconstrained_rational_quadratic_spline 的代码段。
+# 这个函数的作用是计算一个无限制的分段有理二次函数的转换。它的输入有 inputs、unnormalized_widths、unnormalized_heights、unnormalized_derivatives 和 tails，它的输出有 outputs 和 logabsdet。
+# 这个函数还有一些可选参数，如 inverse、tail_bound、min_bin_width、min_bin_height 和 min_derivative。其中，inverse 是一个布尔值，表示是否计算反函数。tail_bound 是一个浮点数，表示尾部的边界。min_bin_width、min_bin_height 和 min_derivative 是常量，分别表示最小的区间宽度、高度和导数。
+# 这个函数首先会调用另一个函数 searchsorted 来计算输入数据的位置，然后判断这些数据是否在一个间隔内，如果不在，则根据 tails 的值进行特殊处理。如果在，则调用 rational_quadratic_spline 函数进行转换。
 def unconstrained_rational_quadratic_spline(inputs,
                                             unnormalized_widths,
                                             unnormalized_heights,
@@ -93,6 +100,13 @@ def unconstrained_rational_quadratic_spline(inputs,
 
     return outputs, logabsdet
 
+# 这是一个定义了一个函数 rational_quadratic_spline 的代码段。
+# 这个函数的作用是计算一个分段有理二次函数的转换。
+# 它的输入有 inputs、unnormalized_widths、unnormalized_heights、unnormalized_derivatives 和可选参数 left、right、bottom 和 top。
+# 它的输出有 outputs 和 logabsdet。这个函数还有一些可选参数，如 inverse、min_bin_width、min_bin_height 和 min_derivative。其中，inverse 是一个布尔值，表示是否计算反函数。min_bin_width、min_bin_height 和 min_derivative 是常量，分别表示最小的区间宽度、高度和导数。
+# 这个函数首先会调用另一个函数 searchsorted 来计算输入数据的位置，然后根据这个位置获取对应的宽度、高度、导数和其他参数，最后根据 inverse 的值分两种情况进行计算。
+# 如果 inverse 为 False，则计算原函数值；如果 inverse 为 True，则计算反函数值。对于原函数的计算，它会根据有理二次函数的形式求解一个二次方程的根；对于反函数的计算，它会根据有理二次函数的形式求解一个二次方程的未知量。
+# 最后，它会计算转换的对数绝对值，这个值表示变换的可逆性。
 def rational_quadratic_spline(inputs,
                               unnormalized_widths,
                               unnormalized_heights,
