@@ -96,6 +96,8 @@ class Decoder(nn.Module):
       x = self.norm_layers_2[i](x + y)
     x = x * x_mask
     return x
+
+    
 # 这两个模块类可以被用来构建一个序列到序列模型，其中输入序列通过编码器编码成隐藏状态，再通过解码器生成输出序列。
 # 在 Encoder 类中，有一个成员变量 attn_layers，是一个 PyTorch 的 nn.ModuleList 类型，用于存储多层注意力层。
 # 每一层注意力层都是由一个 MultiHeadAttention 类来实现的。norm_layers_1 是一个 nn.ModuleList 类型，用于存储多层归一化层，每一层归一化层都是由一个 LayerNorm 类来实现的。

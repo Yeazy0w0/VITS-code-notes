@@ -123,7 +123,7 @@ class DDSConv(nn.Module):
     return x * x_mask
 
 # 这是一个 PyTorch 实现的 Wavenet 模型的一部分。Wavenet 是一种生成模型，常用于生成语音或音乐。这部分代码实现了 Wavenet 中的一个组件，称为 Dilated Convolution（扩张卷积）。这种卷积方式通过膨胀卷积核来增加模型的感受野，从而能够捕捉较大范围的信息。
-# 另外，这个组件还使用了权值归一化（Weight Normalization）来控制模型的复杂度
+# 另外，这个组件还使用了权值归一化（Weight Normalization）来控制模型的复杂度。
 class WN(torch.nn.Module):
   def __init__(self, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=0, p_dropout=0):
     super(WN, self).__init__()

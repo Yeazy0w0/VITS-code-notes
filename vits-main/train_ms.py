@@ -80,7 +80,7 @@ def run(rank, n_gpus, hps):
   train_loader = DataLoader(train_dataset, num_workers=8, shuffle=False, pin_memory=True,
       collate_fn=collate_fn, batch_sampler=train_sampler) #把train_dataset、collate_fn和train_sampler传进去
       # 组mini batch的时候是sampler来组的，同时每组完一个mini batch之后都会经过collate_fn进行后处理（pad，把一个mini batch里的文本、频谱和音频各自pad成相应的长度），这样得到train_loader
-  if rank == 0: # 如果是在主机eval的话，要去做验证，做验证集的时候，在一个GPA上跑，包括记日志、log等，在主GPU上做
+  if rank == 0: # 如果是在主机eval的话，要去做验证，做验证集的时候，在一个GPA上跑，包括记日志、log等。
     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data)
     eval_loader = DataLoader(eval_dataset, num_workers=8, shuffle=False,
         batch_size=hps.train.batch_size, pin_memory=True,
